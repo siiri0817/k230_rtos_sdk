@@ -68,7 +68,6 @@ jobs:
                   "CONFIG_CHERRY_USB_OTG_USING_DEV0=y",
                   "CONFIG_DWC2_DRV_DMA_DESC_ENABLE=y",
                   "CONFIG_CHERRY_USB_HOST_ENABLE_CLASS_UVC=y",
-                  "CONFIG_ENABLE_CANMV_USB_HOST=y",
               ],
           )
           PY
