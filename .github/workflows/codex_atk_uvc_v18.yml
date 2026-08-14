@@ -1,0 +1,114 @@
+name: Build ATK-DNK230D CanMV v1.8 with UVC host
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Install host dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bison flex gcc g++ libncurses-dev pkg-config libconfuse-dev \
+            libssl-dev python3 python3-pip python3-venv cmake libyaml-dev \
+            scons mtools bzip2 rsync wget git
+          python3 -m venv "$HOME/.canmv_venv"
+          source "$HOME/.canmv_venv/bin/activate"
+          pip install pycryptodome gmssl jsonschema jinja2 toml kconfiglib
+
+      - name: Sync exact CanMV v1.8 source manifest
+        run: |
+          mkdir -p "$HOME/.bin" "$GITHUB_WORKSPACE/canmv_v18"
+          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo -o "$HOME/.bin/repo"
+          chmod +x "$HOME/.bin/repo"
+          cd "$GITHUB_WORKSPACE/canmv_v18"
+          "$HOME/.bin/repo" init \
+            -u https://github.com/canmv-k230/manifest.git \
+            -m canmv_v1.8.xml \
+            --repo-url=https://github.com/canmv-k230/git-repo.git \
+            --repo-branch=stable
+          "$HOME/.bin/repo" sync -c -j8
+          "$HOME/.bin/repo" manifest -r -o resolved_manifest.xml
+
+      - name: Enable ATK K230D OTG and UVC host
+        working-directory: canmv_v18
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def add_options(path, options):
+              p = Path(path)
+              text = p.read_text()
+              with p.open("a", newline="\n") as f:
+                  if text and not text.endswith("\n"):
+                      f.write("\n")
+                  for option in options:
+                      key = option.split("=", 1)[0]
+                      if key not in text:
+                          f.write(option + "\n")
+
+          add_options(
+              "configs/k230d_canmv_atk_dnk230d_defconfig",
+              [
+                  "CONFIG_ENABLE_UVC_CAMERA=y",
+                  "CONFIG_USBHOST_MAX_VIDEO_CLASS=1",
+              ],
+          )
+          add_options(
+              "src/rtsmart/rtsmart/kernel/bsp/maix3/configs/k230d_canmv_atk_dnk230d_defconfig",
+              [
+                  "CONFIG_ENABLE_CHERRY_USB_OTG=y",
+                  "CONFIG_CHERRY_USB_OTG_USING_DEV0=y",
+                  "CONFIG_DWC2_DRV_DMA_DESC_ENABLE=y",
+                  "CONFIG_CHERRY_USB_HOST_ENABLE_CLASS_UVC=y",
+                  "CONFIG_ENABLE_CANMV_USB_HOST=y",
+              ],
+          )
+          PY
+          tail -n 12 configs/k230d_canmv_atk_dnk230d_defconfig
+          tail -n 16 src/rtsmart/rtsmart/kernel/bsp/maix3/configs/k230d_canmv_atk_dnk230d_defconfig
+
+      - name: Download RT-Smart toolchain
+        working-directory: canmv_v18
+        run: make dl_toolchain TOOLCHAIN=rtsmart
+
+      - name: Build firmware
+        working-directory: canmv_v18
+        env:
+          IS_CI: "1"
+          SKIP_TOOLCHAIN_CHECK: "1"
+        run: |
+          source "$HOME/.canmv_venv/bin/activate"
+          make k230d_canmv_atk_dnk230d_defconfig
+          echo "Resolved top-level USB settings:"
+          grep -E 'CONFIG_(ENABLE_UVC_CAMERA|USBHOST_MAX_VIDEO_CLASS)=' .config
+          time make -j8
+
+      - name: Collect image and resolved configs
+        if: always()
+        working-directory: canmv_v18
+        run: |
+          mkdir -p codex_artifact
+          find output -type f \( -name '*.img' -o -name '*.img.gz' -o -name '*.md5' \) \
+            -exec cp -v '{}' codex_artifact/ \; 2>/dev/null || true
+          cp -v configs/k230d_canmv_atk_dnk230d_defconfig codex_artifact/top_defconfig.txt
+          cp -v src/rtsmart/rtsmart/kernel/bsp/maix3/configs/k230d_canmv_atk_dnk230d_defconfig \
+            codex_artifact/rtsmart_defconfig.txt
+          cp -v resolved_manifest.xml codex_artifact/
+          find codex_artifact -maxdepth 1 -type f -printf '%f %s bytes\n'
+
+      - name: Upload firmware artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: atk-dnk230d-canmv-v1.8-uvc-host
+          path: canmv_v18/codex_artifact/
+          if-no-files-found: error
+          retention-days: 3
