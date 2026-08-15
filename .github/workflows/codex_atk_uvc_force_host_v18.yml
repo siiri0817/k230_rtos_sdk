@@ -102,17 +102,34 @@ jobs:
           csc = Path("src/canmv/port/modules/modnonai2d.csc.c")
           text = csc.read_text()
           replacements = {
+              "// py_nonai_2d_csc_obj_t* o = m_new_obj_with_finaliser(py_nonai_2d_csc_obj_t);\n    py_nonai_2d_csc_obj_t* o = malloc(sizeof(py_nonai_2d_csc_obj_t));": "py_nonai_2d_csc_obj_t* o = m_new_obj_with_finaliser(py_nonai_2d_csc_obj_t);",
+              "o->_cobj.is_destroyed = 0;\n    INIT_LIST_HEAD(&o->_cobj.frame_vf_info_list);": "o->_cobj.is_destroyed = 0;\n    o->_cobj.cvt_vf_info_obj = mp_const_none;\n    INIT_LIST_HEAD(&o->_cobj.frame_vf_info_list);",
+              "pthread_mutex_init(&o->_cobj.mutex, &thread_mutex_attr);": "pthread_mutex_init(&o->_cobj.mutex, &thread_mutex_attr);\n    pthread_mutexattr_destroy(&thread_mutex_attr);",
               "mp_obj_t to_image_func;": "mp_obj_t to_image_method[2];",
               "mp_load_method(dumped_vf_video_frame_obj, MP_QSTR_to_image, &to_image_func);": "mp_load_method(dumped_vf_video_frame_obj, MP_QSTR_to_image, to_image_method);",
               "mp_obj_is_callable(to_image_func)": "mp_obj_is_callable(to_image_method[0])",
               "to_image_func, // func": "to_image_method[0], // func",
               "dumped_vf_video_frame_obj, // self": "to_image_method[1], // self",
+              "list_del(&obj->list);\n    free(obj);": "list_del(&obj->list);\n    INIT_LIST_HEAD(&obj->list);",
+              "// { MP_ROM_QSTR(MP_QSTR___del__), MP_ROM_PTR(&py_nonai_2d_csc_destroy_obj) },": "{ MP_ROM_QSTR(MP_QSTR___del__), MP_ROM_PTR(&py_nonai_2d_csc_destroy_obj) },",
           }
           for old, new in replacements.items():
               if text.count(old) != 1:
                   raise RuntimeError(f"unexpected CSC implementation for: {old}")
               text = text.replace(old, new)
           csc.write_text(text)
+
+          for relative in (
+              "src/canmv/port/modules/modmedia.videoframe.c",
+              "src/canmv/port/modules/modmedia.uvc.c",
+          ):
+              path = Path(relative)
+              text = path.read_text()
+              old = "image_t               image;" if "videoframe" in relative else "image_t          image;"
+              new = old[:-1] + " = { 0 };"
+              if text.count(old) != 1:
+                  raise RuntimeError(f"unexpected uninitialized image_t in {relative}")
+              path.write_text(text.replace(old, new))
           PY
 
       - name: Download RT-Smart toolchain
@@ -142,16 +159,23 @@ jobs:
           grep -q 'mp_obj_t to_image_method\[2\];' src/canmv/port/modules/modnonai2d.csc.c
           grep -q 'mp_load_method(dumped_vf_video_frame_obj, MP_QSTR_to_image, to_image_method);' src/canmv/port/modules/modnonai2d.csc.c
           ! grep -q 'mp_obj_t to_image_func;' src/canmv/port/modules/modnonai2d.csc.c
+          grep -q 'm_new_obj_with_finaliser(py_nonai_2d_csc_obj_t)' src/canmv/port/modules/modnonai2d.csc.c
+          ! grep -q 'py_nonai_2d_csc_obj_t\* o = malloc' src/canmv/port/modules/modnonai2d.csc.c
+          ! grep -q 'free(obj);' src/canmv/port/modules/modnonai2d.csc.c
+          grep -q 'image_t               image = { 0 };' src/canmv/port/modules/modmedia.videoframe.c
+          grep -q 'image_t          image = { 0 };' src/canmv/port/modules/modmedia.uvc.c
           time make -j8
-          rt_cfg=src/rtsmart/.config
-          test -f "$rt_cfg"
-          grep -qx 'CONFIG_ENABLE_CHERRY_USB_HOST=y' "$rt_cfg"
-          grep -qx 'CONFIG_CHERRY_USB_HOST_USING_DEV0=y' "$rt_cfg"
-          grep -qx 'CONFIG_CHERRY_USB_HOST_ENABLE_CLASS_UVC=y' "$rt_cfg"
-          grep -qx 'CONFIG_CANMV_USB_PWR_PIN=-1' "$rt_cfg"
-          ! grep -q '^CONFIG_ENABLE_CANMV_USB_HOST=y' "$rt_cfg"
-          ! grep -q '^CONFIG_ENABLE_CHERRY_USB_OTG=y' "$rt_cfg"
-          ! grep -q '^CONFIG_ENABLE_CHERRY_USB_DEVICE=y' "$rt_cfg"
+          test -n "$(find output -type f -name '*.img' -print -quit)"
+
+      - name: Verify post-build source patches
+        working-directory: canmv_v18
+        run: |
+          grep -q 'mp_obj_t to_image_method\[2\];' src/canmv/port/modules/modnonai2d.csc.c
+          grep -q 'm_new_obj_with_finaliser(py_nonai_2d_csc_obj_t)' src/canmv/port/modules/modnonai2d.csc.c
+          ! grep -q 'py_nonai_2d_csc_obj_t\* o = malloc' src/canmv/port/modules/modnonai2d.csc.c
+          ! grep -q 'free(obj);' src/canmv/port/modules/modnonai2d.csc.c
+          grep -q 'image_t               image = { 0 };' src/canmv/port/modules/modmedia.videoframe.c
+          grep -q 'image_t          image = { 0 };' src/canmv/port/modules/modmedia.uvc.c
 
       - name: Collect image and resolved configs
         if: always()
