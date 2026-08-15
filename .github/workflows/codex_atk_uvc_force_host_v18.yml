@@ -88,10 +88,16 @@ jobs:
           )
           main = Path("src/rtsmart/rtsmart/kernel/bsp/maix3/app_canmv/main.c")
           text = main.read_text()
-          old = "#if defined (ENABLE_CHERRY_USB_HOST) && defined (ENABLE_CANMV_USB_HOST)"
-          if text.count(old) != 1:
-              raise RuntimeError("unexpected USB host initialization guard")
-          main.write_text(text.replace(old, "#if defined (ENABLE_CHERRY_USB_HOST)"))
+          init_guard = "#if defined (ENABLE_CHERRY_USB_HOST) && defined (ENABLE_CANMV_USB_HOST)"
+          helper_guard = "#if defined(ENABLE_CHERRY_USB) && !defined(ENABLE_CHERRY_USB_OTG) && defined(ENABLE_CHERRY_USB_HOST) && defined(ENABLE_CANMV_USB_HOST)"
+          if text.count(init_guard) != 1 or text.count(helper_guard) != 1:
+              raise RuntimeError("unexpected USB host initialization guards")
+          text = text.replace(init_guard, "#if defined (ENABLE_CHERRY_USB_HOST)")
+          text = text.replace(
+              helper_guard,
+              "#if defined(ENABLE_CHERRY_USB) && !defined(ENABLE_CHERRY_USB_OTG) && defined(ENABLE_CHERRY_USB_HOST)",
+          )
+          main.write_text(text)
           PY
 
       - name: Download RT-Smart toolchain
@@ -117,6 +123,7 @@ jobs:
           ! grep -q '^CONFIG_ENABLE_CHERRY_USB_OTG=y' "$rt_defconfig"
           ! grep -q '^CONFIG_ENABLE_CHERRY_USB_DEVICE=y' "$rt_defconfig"
           grep -q '^#if defined (ENABLE_CHERRY_USB_HOST)$' src/rtsmart/rtsmart/kernel/bsp/maix3/app_canmv/main.c
+          grep -q '^#if defined(ENABLE_CHERRY_USB) && !defined(ENABLE_CHERRY_USB_OTG) && defined(ENABLE_CHERRY_USB_HOST)$' src/rtsmart/rtsmart/kernel/bsp/maix3/app_canmv/main.c
           time make -j8
           rt_cfg=output/k230d_canmv_atk_dnk230d_defconfig/k230_sdk/src/big/rt-smart/kernel/bsp/maix3/.config
           test -f "$rt_cfg"
