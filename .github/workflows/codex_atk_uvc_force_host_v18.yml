@@ -143,7 +143,7 @@ jobs:
           grep -q 'mp_load_method(dumped_vf_video_frame_obj, MP_QSTR_to_image, to_image_method);' src/canmv/port/modules/modnonai2d.csc.c
           ! grep -q 'mp_obj_t to_image_func;' src/canmv/port/modules/modnonai2d.csc.c
           time make -j8
-          rt_cfg=output/k230d_canmv_atk_dnk230d_defconfig/rtsmart/kernel/bsp/maix3/.config
+          rt_cfg=src/rtsmart/.config
           test -f "$rt_cfg"
           grep -qx 'CONFIG_ENABLE_CHERRY_USB_HOST=y' "$rt_cfg"
           grep -qx 'CONFIG_CHERRY_USB_HOST_USING_DEV0=y' "$rt_cfg"
