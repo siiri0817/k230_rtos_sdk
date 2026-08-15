@@ -101,31 +101,18 @@ jobs:
 
           csc = Path("src/canmv/port/modules/modnonai2d.csc.c")
           text = csc.read_text()
-          old = """        mp_obj_t to_image_func;
-
-        mp_load_method(dumped_vf_video_frame_obj, MP_QSTR_to_image, &to_image_func);
-        if (!mp_obj_is_callable(to_image_func)) {
-            mp_raise_msg(&mp_type_RuntimeError, MP_ERROR_TEXT(\"Can't call to_image\"));
-        }
-
-        mp_obj_t call_args[4] = {
-            to_image_func, // func
-            dumped_vf_video_frame_obj, // self
-"""
-          new = """        mp_obj_t to_image_method[2];
-
-        mp_load_method(dumped_vf_video_frame_obj, MP_QSTR_to_image, to_image_method);
-        if (!mp_obj_is_callable(to_image_method[0])) {
-            mp_raise_msg(&mp_type_RuntimeError, MP_ERROR_TEXT(\"Can't call to_image\"));
-        }
-
-        mp_obj_t call_args[4] = {
-            to_image_method[0], // func
-            to_image_method[1], // self
-"""
-          if text.count(old) != 1:
-              raise RuntimeError("unexpected CSC to_image method dispatch implementation")
-          csc.write_text(text.replace(old, new))
+          replacements = {
+              "mp_obj_t to_image_func;": "mp_obj_t to_image_method[2];",
+              "mp_load_method(dumped_vf_video_frame_obj, MP_QSTR_to_image, &to_image_func);": "mp_load_method(dumped_vf_video_frame_obj, MP_QSTR_to_image, to_image_method);",
+              "mp_obj_is_callable(to_image_func)": "mp_obj_is_callable(to_image_method[0])",
+              "to_image_func, // func": "to_image_method[0], // func",
+              "dumped_vf_video_frame_obj, // self": "to_image_method[1], // self",
+          }
+          for old, new in replacements.items():
+              if text.count(old) != 1:
+                  raise RuntimeError(f"unexpected CSC implementation for: {old}")
+              text = text.replace(old, new)
+          csc.write_text(text)
           PY
 
       - name: Download RT-Smart toolchain
