@@ -82,11 +82,16 @@ jobs:
                   "CONFIG_ENABLE_CHERRY_USB_HOST=y",
                   "CONFIG_CHERRY_USB_HOST_USING_DEV0=y",
                   "CONFIG_CHERRY_USB_HOST_ENABLE_CLASS_UVC=y",
-                  "CONFIG_ENABLE_CANMV_USB_HOST=y",
                   "CONFIG_CANMV_USB_PWR_PIN=-1",
                   "CONFIG_DWC2_DRV_DMA_DESC_ENABLE=y",
               ],
           )
+          main = Path("src/rtsmart/rtsmart/kernel/bsp/maix3/app_canmv/main.c")
+          text = main.read_text()
+          old = "#if defined (ENABLE_CHERRY_USB_HOST) && defined (ENABLE_CANMV_USB_HOST)"
+          if text.count(old) != 1:
+              raise RuntimeError("unexpected USB host initialization guard")
+          main.write_text(text.replace(old, "#if defined (ENABLE_CHERRY_USB_HOST)"))
           PY
 
       - name: Download RT-Smart toolchain
@@ -107,18 +112,19 @@ jobs:
           grep -qx 'CONFIG_ENABLE_CHERRY_USB_HOST=y' "$rt_defconfig"
           grep -qx 'CONFIG_CHERRY_USB_HOST_USING_DEV0=y' "$rt_defconfig"
           grep -qx 'CONFIG_CHERRY_USB_HOST_ENABLE_CLASS_UVC=y' "$rt_defconfig"
-          grep -qx 'CONFIG_ENABLE_CANMV_USB_HOST=y' "$rt_defconfig"
           grep -qx 'CONFIG_CANMV_USB_PWR_PIN=-1' "$rt_defconfig"
+          ! grep -q '^CONFIG_ENABLE_CANMV_USB_HOST=y' "$rt_defconfig"
           ! grep -q '^CONFIG_ENABLE_CHERRY_USB_OTG=y' "$rt_defconfig"
           ! grep -q '^CONFIG_ENABLE_CHERRY_USB_DEVICE=y' "$rt_defconfig"
+          grep -q '^#if defined (ENABLE_CHERRY_USB_HOST)$' src/rtsmart/rtsmart/kernel/bsp/maix3/app_canmv/main.c
           time make -j8
           rt_cfg=output/k230d_canmv_atk_dnk230d_defconfig/k230_sdk/src/big/rt-smart/kernel/bsp/maix3/.config
           test -f "$rt_cfg"
           grep -qx 'CONFIG_ENABLE_CHERRY_USB_HOST=y' "$rt_cfg"
           grep -qx 'CONFIG_CHERRY_USB_HOST_USING_DEV0=y' "$rt_cfg"
           grep -qx 'CONFIG_CHERRY_USB_HOST_ENABLE_CLASS_UVC=y' "$rt_cfg"
-          grep -qx 'CONFIG_ENABLE_CANMV_USB_HOST=y' "$rt_cfg"
           grep -qx 'CONFIG_CANMV_USB_PWR_PIN=-1' "$rt_cfg"
+          ! grep -q '^CONFIG_ENABLE_CANMV_USB_HOST=y' "$rt_cfg"
           ! grep -q '^CONFIG_ENABLE_CHERRY_USB_OTG=y' "$rt_cfg"
           ! grep -q '^CONFIG_ENABLE_CHERRY_USB_DEVICE=y' "$rt_cfg"
 
