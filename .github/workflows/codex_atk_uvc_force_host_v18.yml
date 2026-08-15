@@ -125,7 +125,7 @@ jobs:
           grep -q '^#if defined (ENABLE_CHERRY_USB_HOST)$' src/rtsmart/rtsmart/kernel/bsp/maix3/app_canmv/main.c
           grep -q '^#if defined(ENABLE_CHERRY_USB) && !defined(ENABLE_CHERRY_USB_OTG) && defined(ENABLE_CHERRY_USB_HOST)$' src/rtsmart/rtsmart/kernel/bsp/maix3/app_canmv/main.c
           time make -j8
-          rt_cfg=output/k230d_canmv_atk_dnk230d_defconfig/k230_sdk/src/big/rt-smart/kernel/bsp/maix3/.config
+          rt_cfg=output/k230d_canmv_atk_dnk230d_defconfig/rtsmart/kernel/bsp/maix3/.config
           test -f "$rt_cfg"
           grep -qx 'CONFIG_ENABLE_CHERRY_USB_HOST=y' "$rt_cfg"
           grep -qx 'CONFIG_CHERRY_USB_HOST_USING_DEV0=y' "$rt_cfg"
