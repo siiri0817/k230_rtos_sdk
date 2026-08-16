@@ -42,6 +42,7 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
+          from textwrap import dedent
 
           def replace_options(path, remove_keys, options):
               p = Path(path)
@@ -97,7 +98,212 @@ jobs:
               helper_guard,
               "#if defined(ENABLE_CHERRY_USB) && !defined(ENABLE_CHERRY_USB_OTG) && defined(ENABLE_CHERRY_USB_HOST)",
           )
+          async_end = dedent("""\
+            return usbh_initialize(busid, reg_base);
+          }
+          #endif
+          """)
+          recovery_helpers = dedent("""\
+            int ret = usbh_initialize(busid, reg_base);
+            usbh_initialize_done = true;
+            return ret;
+          }
+
+          #define USB_HOST_RECOVERY_RETRIES 2
+          #define USB_HOST_CONNECT_WAIT_MS  5000
+          #define DWC2_HPRT0_OFFSET         0x440
+          #define DWC2_HPRT0_PCSTS          0x001
+
+          static volatile bool usbh_initialize_done;
+          static uint32_t usbh_recovery_reg_base;
+
+          static void usbh_recovery_monitor_entry(void *parameter)
+          {
+            const uint32_t poll_ms = 500;
+            (void)parameter;
+
+            while (!usbh_initialize_done)
+              rt_thread_mdelay(20);
+
+            for (unsigned int attempt = 1; attempt <= USB_HOST_RECOVERY_RETRIES; ++attempt) {
+              for (unsigned int waited = 0; waited < USB_HOST_CONNECT_WAIT_MS; waited += poll_ms) {
+                uint32_t hprt0 = readl((void *)(uintptr_t)(usbh_recovery_reg_base + DWC2_HPRT0_OFFSET));
+                if (hprt0 & DWC2_HPRT0_PCSTS) {
+                  rt_kprintf("[usb-recovery] port connected, monitor exits; HPRT0=%08x\\n", hprt0);
+                  return;
+                }
+                rt_thread_mdelay(poll_ms);
+              }
+
+              rt_kprintf("[usb-recovery] no physical connection; reinit %u/%u HPRT0=%08x\\n",
+                         attempt, USB_HOST_RECOVERY_RETRIES,
+                         readl((void *)(uintptr_t)(usbh_recovery_reg_base + DWC2_HPRT0_OFFSET)));
+              usbh_initialize_done = false;
+              usbh_deinitialize(0);
+              rt_thread_mdelay(100);
+              int ret = usbh_initialize(0, usbh_recovery_reg_base);
+              usbh_initialize_done = true;
+              rt_kprintf("[usb-recovery] reinit %u result=%d\\n", attempt, ret);
+              if (ret < 0)
+                return;
+            }
+
+            rt_kprintf("[usb-recovery] retry limit reached; leaving CherryUSB running for hot plug\\n");
+          }
+
+          static void usbh_start_recovery_monitor(uint32_t reg_base)
+          {
+            usbh_recovery_reg_base = reg_base;
+            rt_thread_t tid = rt_thread_create("usbh_mon", usbh_recovery_monitor_entry, NULL,
+                                               4096, RT_THREAD_PRIORITY_MAX - 2, 20);
+            if (tid)
+              rt_thread_startup(tid);
+            else
+              rt_kprintf("[usb-recovery] unable to create monitor thread\\n");
+          }
+          #endif
+          """)
+          if text.count(async_end) != 1:
+              raise RuntimeError("unexpected async USB host helper")
+          # The completion flag is referenced by both async entry paths.
+          text = text.replace(
+              "static struct usbh_initialize_async_arg usbh_initialize_async_args;",
+              "static struct usbh_initialize_async_arg usbh_initialize_async_args;\nstatic volatile bool usbh_initialize_done;",
+          )
+          async_entry_call = "  usbh_initialize(arg->busid, arg->reg_base);"
+          if text.count(async_entry_call) != 1:
+              raise RuntimeError("unexpected async USB host entry")
+          text = text.replace(
+              async_entry_call,
+              async_entry_call + "\n  usbh_initialize_done = true;",
+          )
+          recovery_helpers = recovery_helpers.replace("\nstatic volatile bool usbh_initialize_done;\n", "\n")
+          text = text.replace(async_end, recovery_helpers)
+          init_call = "  usbh_initialize_async(0, (uint32_t)(long)usb_base);"
+          if text.count(init_call) != 1:
+              raise RuntimeError("unexpected USB host init call")
+          text = text.replace(
+              init_call,
+              init_call + "\n  usbh_start_recovery_monitor((uint32_t)(long)usb_base);",
+          )
           main.write_text(text)
+
+          hcd = Path("src/rtsmart/rtsmart/kernel/bsp/maix3/components/CherryUSB/port/dwc2/usb_hc_dwc2.c")
+          text = hcd.read_text()
+          drive_marker = "static inline uint8_t usbh_get_port_speed(struct usbh_bus *bus, const uint8_t port)"
+          register_logger = dedent("""\
+          static void dwc2_log_host_state(struct usbh_bus *bus, const char *event)
+          {
+              void *ctrl3_map = rt_ioremap((void *)(0x91585000UL + 0x7CUL), 0x1000);
+              uint32_t ctrl3 = ctrl3_map ? readl(ctrl3_map) : 0xffffffffU;
+              USB_LOG_WRN("[usb-host] %s USB0_CTRL3=%08x GUSBCFG=%08x GOTGCTL=%08x GRSTCTL=%08x HPRT0=%08x\\r\\n",
+                          event, ctrl3, USB_OTG_GLB->GUSBCFG, USB_OTG_GLB->GOTGCTL,
+                          USB_OTG_GLB->GRSTCTL, USB_OTG_HPRT);
+              if (ctrl3_map)
+                  rt_iounmap(ctrl3_map);
+          }
+
+          """)
+          if text.count(drive_marker) != 1:
+              raise RuntimeError("unexpected DWC2 speed helper")
+          text = text.replace(drive_marker, register_logger + drive_marker)
+          reset_start = dedent("""\
+          static int usbh_reset_port(struct usbh_bus *bus, const uint8_t port)
+          {
+              __IO uint32_t hprt0 = 0U;
+          """)
+          if text.count(reset_start) != 1:
+              raise RuntimeError("unexpected DWC2 port reset helper")
+          text = text.replace(
+              reset_start,
+              reset_start + '    USB_LOG_WRN("[usb-host] port %u reset begin HPRT0=%08x\\r\\n", port, USB_OTG_HPRT);\n',
+          )
+          init_return = dedent("""\
+              USB_OTG_GLB->GAHBCFG |= USB_OTG_GAHBCFG_GINT;
+
+              return ret;
+          }
+          """)
+          if text.count(init_return) != 1:
+              raise RuntimeError("unexpected DWC2 init return")
+          text = text.replace(
+              init_return,
+              dedent("""\
+              USB_OTG_GLB->GAHBCFG |= USB_OTG_GAHBCFG_GINT;
+
+              dwc2_log_host_state(bus, "initialized");
+              return ret;
+          }
+          """),
+          )
+          connect_irq = """\
+                  if ((hprt0 & USB_OTG_HPRT_PCSTS) == USB_OTG_HPRT_PCSTS) {
+                      bus->hcd.roothub.int_buffer[0] = (1 << 1);
+          """
+          if text.count(connect_irq) != 1:
+              raise RuntimeError("unexpected DWC2 connect IRQ")
+          text = text.replace(
+              connect_irq,
+              """\
+                  if ((hprt0 & USB_OTG_HPRT_PCSTS) == USB_OTG_HPRT_PCSTS) {
+                      USB_LOG_WRN("[usb-host] physical connect HPRT0=%08x\\r\\n", hprt0);
+                      bus->hcd.roothub.int_buffer[0] = (1 << 1);
+          """,
+          )
+          disconnect_irq = """\
+                  if (gint_status & USB_OTG_GINTSTS_DISCINT) {
+                      g_dwc2_hcd[bus->hcd.hcd_id].port_csc = 1;
+          """
+          if text.count(disconnect_irq) != 1:
+              raise RuntimeError("unexpected DWC2 disconnect IRQ")
+          text = text.replace(
+              disconnect_irq,
+              """\
+                  if (gint_status & USB_OTG_GINTSTS_DISCINT) {
+                      USB_LOG_WRN("[usb-host] physical disconnect HPRT0=%08x\\r\\n", USB_OTG_HPRT);
+                      g_dwc2_hcd[bus->hcd.hcd_id].port_csc = 1;
+          """,
+          )
+          hcd.write_text(text)
+
+          hub = Path("src/rtsmart/rtsmart/kernel/bsp/maix3/components/CherryUSB/class/hub/usbh_hub.c")
+          text = hub.read_text()
+          enum_success = """\
+                                  ret = usbh_enumerate(child);
+                                  if (ret >= 0)
+                                      break;
+          """
+          if text.count(enum_success) != 1:
+              raise RuntimeError("unexpected CherryUSB enumerate loop")
+          text = text.replace(
+              enum_success,
+              """\
+                                  ret = usbh_enumerate(child);
+                                  if (ret >= 0) {
+                                      USB_LOG_WRN("[usb-host] enumerated VID:PID %04x:%04x addr=%u\\r\\n",
+                                                  child->device_desc.idVendor, child->device_desc.idProduct,
+                                                  child->dev_addr);
+                                      break;
+                                  }
+          """,
+          )
+          text = text.replace(
+              'USB_LOG_INFO("Device on Bus %u, Hub %u, Port %u disconnected\\r\\n", hub->bus->busid, hub->index, port + 1);',
+              'USB_LOG_WRN("[usb-host] device disconnected Bus %u Hub %u Port %u\\r\\n", hub->bus->busid, hub->index, port + 1);',
+          )
+          hub.write_text(text)
+
+          video = Path("src/rtsmart/rtsmart/kernel/bsp/maix3/components/CherryUSB/class/video/usbh_video.c")
+          text = video.read_text()
+          text = text.replace(
+              'USB_LOG_INFO("Register Video Class:%s\\r\\n", hport->config.intf[intf].devname);',
+              'USB_LOG_WRN("[usb-host] UVC bound: %s\\r\\n", hport->config.intf[intf].devname);',
+          )
+          text = text.replace(
+              'USB_LOG_INFO("Unregister Video Class:%s\\r\\n", hport->config.intf[intf].devname);',
+              'USB_LOG_WRN("[usb-host] UVC unbound: %s\\r\\n", hport->config.intf[intf].devname);',
+          )
+          video.write_text(text)
 
           csc = Path("src/canmv/port/modules/modnonai2d.csc.c")
           text = csc.read_text()
@@ -156,6 +362,11 @@ jobs:
           ! grep -q '^CONFIG_ENABLE_CHERRY_USB_DEVICE=y' "$rt_defconfig"
           grep -q '^#if defined (ENABLE_CHERRY_USB_HOST)$' src/rtsmart/rtsmart/kernel/bsp/maix3/app_canmv/main.c
           grep -q '^#if defined(ENABLE_CHERRY_USB) && !defined(ENABLE_CHERRY_USB_OTG) && defined(ENABLE_CHERRY_USB_HOST)$' src/rtsmart/rtsmart/kernel/bsp/maix3/app_canmv/main.c
+          grep -q 'USB_HOST_RECOVERY_RETRIES 2' src/rtsmart/rtsmart/kernel/bsp/maix3/app_canmv/main.c
+          grep -q 'usbh_start_recovery_monitor' src/rtsmart/rtsmart/kernel/bsp/maix3/app_canmv/main.c
+          grep -q 'USB0_CTRL3=%08x GUSBCFG=%08x GOTGCTL=%08x GRSTCTL=%08x HPRT0=%08x' src/rtsmart/rtsmart/kernel/bsp/maix3/components/CherryUSB/port/dwc2/usb_hc_dwc2.c
+          grep -q '\[usb-host\] enumerated VID:PID' src/rtsmart/rtsmart/kernel/bsp/maix3/components/CherryUSB/class/hub/usbh_hub.c
+          grep -q '\[usb-host\] UVC bound' src/rtsmart/rtsmart/kernel/bsp/maix3/components/CherryUSB/class/video/usbh_video.c
           grep -q 'mp_obj_t to_image_method\[2\];' src/canmv/port/modules/modnonai2d.csc.c
           grep -q 'mp_load_method(dumped_vf_video_frame_obj, MP_QSTR_to_image, to_image_method);' src/canmv/port/modules/modnonai2d.csc.c
           ! grep -q 'mp_obj_t to_image_func;' src/canmv/port/modules/modnonai2d.csc.c
